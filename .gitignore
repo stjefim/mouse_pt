@@ -2,3 +2,4 @@
 *.zip
 cp/*
 data/*
+__pycache__/*

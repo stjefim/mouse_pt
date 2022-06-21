@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision
 import torchvision.utils as vutils
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
@@ -17,12 +18,17 @@ DATA = 'data/'
 NOISE_DIM = 100
 NGF = 64
 NDF = 64
-NC = 1 
-NGPU = 0
+NC = 1
+NGPU = 1
 BATCH = 128
-EPOCHS = 30
+EPOCHS = 100
 LR = 0.0002
 BETA1 = 0.5
+
+
+def log(msg, file):
+    print(msg)
+    print(msg, file=file)
 
 
 def weights_init(m):
@@ -39,25 +45,25 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
         self.ngpu = ngpu
         self.main = nn.Sequential(
-            nn.ConvTranspose2d(NOISE_DIM, NGF * 8, 6, 1, 0, bias=False),
+            nn.ConvTranspose2d(NOISE_DIM, NGF * 8, 4, 1, 0, bias=False),
             nn.BatchNorm2d(NGF * 8),
             nn.ReLU(True),
-            # state size. (NGF*8) x 6 x 6
+            # state size. (NGF*8) x 4 x 4
             nn.ConvTranspose2d(NGF * 8, NGF * 4, 4, 2, 1, bias=False),
             nn.BatchNorm2d(NGF * 4),
             nn.ReLU(True),
-            # state size. (NGF*4) x 12 x 12
-            nn.ConvTranspose2d(NGF * 4, NGF * 2, 5, 2, 1, bias=False),
+            # state size. (NGF*4) x 8 x 8
+            nn.ConvTranspose2d(NGF * 4, NGF * 2, 4, 2, 1, bias=False),
             nn.BatchNorm2d(NGF * 2),
             nn.ReLU(True),
-            # state size. (NGF*2) x 25 x 25
+            # state size. (NGF*2) x 16 x 16
             nn.ConvTranspose2d(NGF * 2, NGF, 4, 2, 1, bias=False),
             nn.BatchNorm2d(NGF),
             nn.ReLU(True),
-            # state size. (NGF) x 50 x 50
+            # state size. (NGF) x 32 x 32
             nn.ConvTranspose2d(NGF, NC, 4, 2, 1, bias=False),
             nn.Tanh()
-            # state size. (nc) x 100 x 100
+            # state size. (nc) x 64 x 64
         )
 
     def forward(self, input):
@@ -69,23 +75,23 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         self.ngpu = ngpu
         self.main = nn.Sequential(
-            # input is (NC) x 100 x 100
+            # input is (nc) x 64 x 64
             nn.Conv2d(NC, NDF, 4, 2, 1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
-            # state size. (NDF) x 50 x 50
+            # state size. (NDF) x 32 x 32
             nn.Conv2d(NDF, NDF * 2, 4, 2, 1, bias=False),
             nn.BatchNorm2d(NDF * 2),
             nn.LeakyReLU(0.2, inplace=True),
-            # state size. (NDF*2) x 25 x 25
+            # state size. (NDF*2) x 16 x 16
             nn.Conv2d(NDF * 2, NDF * 4, 4, 2, 1, bias=False),
             nn.BatchNorm2d(NDF * 4),
             nn.LeakyReLU(0.2, inplace=True),
-            # state size. (NDF*4) x 13 x 13
+            # state size. (NDF*4) x 8 x 8
             nn.Conv2d(NDF * 4, NDF * 8, 4, 2, 1, bias=False),
             nn.BatchNorm2d(NDF * 8),
             nn.LeakyReLU(0.2, inplace=True),
-            # state size. (NDF*8) x 6 x 6
-            nn.Conv2d(NDF * 8, 1, 6, 1, 0, bias=False),
+            # state size. (NDF*8) x 4 x 4
+            nn.Conv2d(NDF * 8, 1, 4, 1, 0, bias=False),
             nn.Sigmoid()
         )
 
@@ -93,45 +99,46 @@ class Discriminator(nn.Module):
         return self.main(input)
 
 
-def train():
-    dataset = dset.ImageFolder(root=DATA,
+
+dataset = dset.ImageFolder(root=DATA,
                             transform=transforms.Compose([
-                                transforms.Grayscale(num_output_channels=1),
-                                transforms.ToTensor()
+                                transforms.ToTensor(),
+                                transforms.Grayscale()
                             ]))
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=BATCH,
-                                            shuffle=True, num_workers=2)
-    device = torch.device("cuda:0" if (torch.cuda.is_available() and NGPU > 0) else "cpu")
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=BATCH,
+                                        shuffle=True, num_workers=2)
+device = torch.device("cuda:0" if (torch.cuda.is_available() and NGPU > 0) else "cpu")
 
-    generator = Generator(NGPU).to(device)
-    if (device.type == 'cuda') and (NGPU > 1):
-        generator = nn.DataParllel(generator, list(range(NGPU)))
-    generator.apply(weights_init)
+generator = Generator(NGPU).to(device)
+if (device.type == 'cuda') and (NGPU > 1):
+    generator = nn.DataParllel(generator, list(range(NGPU)))
+generator.apply(weights_init)
 
-    discriminator = Discriminator(NGPU).to(device)
-    if (device.type == 'cuda') and (NGPU > 1):
-        discriminator = nn.DataParallel(discriminator, list(range(NGPU)))
-    discriminator.apply(weights_init)
+discriminator = Discriminator(NGPU).to(device)
+if (device.type == 'cuda') and (NGPU > 1):
+    discriminator = nn.DataParallel(discriminator, list(range(NGPU)))
+discriminator.apply(weights_init)
 
-    criterion = nn.BCELoss()
-    fixed_noise = torch.randn(64, NOISE_DIM, 1, 1, device=device)
+criterion = nn.BCELoss()
+fixed_noise = torch.randn(64, NOISE_DIM, 1, 1, device=device)
 
-    real_label = 1.
-    fake_label = 0.
+real_label = 1.
+fake_label = 0.
 
-    optimizerD = optim.Adam(discriminator.parameters(), lr=LR, betas=(BETA1, 0.999))
-    optimizerG = optim.Adam(generator.parameters(), lr=LR, betas=(BETA1, 0.999))
+optimizerD = optim.Adam(discriminator.parameters(), lr=LR, betas=(BETA1, 0.999))
+optimizerG = optim.Adam(generator.parameters(), lr=LR, betas=(BETA1, 0.999))
+cur_epoch = 0
 
-    # Training Loop
-    img_list = []
-    G_losses = []
-    D_losses = []
-    iters = 0
 
+
+
+def train():
+    f = open('log.txt', 'w')
+    generator.train()
+    discriminator.train()
     print("Starting Training Loop...")
-    for epoch in range(EPOCHS):
+    for epoch in range(cur_epoch + 1, EPOCHS):
         for i, data in enumerate(dataloader, 0):
-            pass
             ###########################
             # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
             ##########################
@@ -166,6 +173,10 @@ def train():
             # Update D
             optimizerD.step()
 
+            label.fill_(real_label)
+            output = discriminator(real_cpu).view(-1)
+            D_x_2 = output.mean().item()
+
             ############################
             # (2) Update G network: maximize log(D(G(z)))
             ###########################
@@ -183,57 +194,36 @@ def train():
 
             # Output training stats
             if i % 50 == 0:
-                print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
+                log('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x):  %.4f / %.4f\tD(G(z)): %.4f / %.4f'
                     % (epoch, EPOCHS, i, len(dataloader),
-                        errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
-
-            # Save Losses for plotting later
-            G_losses.append(errG.item())
-            D_losses.append(errD.item())
-
-            # Check how the generator is doing by saving G's output on fixed_noise
-            if (iters % 500 == 0) or ((epoch == EPOCHS-1) and (i == len(dataloader)-1)):
-                with torch.no_grad():
-                    fake = generator(fixed_noise).detach().cpu()
-                img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
-
-            iters += 1
-        
-        if epoch % 5 == 0:
-            torch.save({'epoch': epoch, 'g': generator.state_dict(), 'd': discriminator.state_dict(), 'og': optimizerG.state_dict(),
-                        'od': optimizerD.state_dict()}, f'cp/cp_{epoch}')
+                        errD.item(), errG.item(), D_x, D_x_2, D_G_z1, D_G_z2), f)
 
 
+            if epoch % 5 == 0: 
+                torch.save({'epoch': epoch, 'g': generator.state_dict(), 'd': discriminator.state_dict(), 'og': optimizerG.state_dict(),
+                         'od': optimizerD.state_dict()}, f'cp/cp_{epoch}')
+    f.close()
 
-def test(checkpoint):
-    device = torch.device("cuda:0" if (torch.cuda.is_available() and NGPU > 0) else "cpu")
-
-    generator = Generator(NGPU).to(device)
-    if (device.type == 'cuda') and (NGPU > 1):
-        generator = nn.DataParallel(generator, list(range(NGPU)))
-
-    discriminator = Discriminator(NGPU).to(device)
-    if (device.type == 'cuda') and (NGPU > 1):
-        discriminator = nn.DataParallel(discriminator, list(range(NGPU)))
-
-    fixed_noise = torch.randn(64, NOISE_DIM, 1, 1, device=device)
-
-    optimizerD = optim.Adam(discriminator.parameters(), lr=LR, betas=(BETA1, 0.999))
-    optimizerG = optim.Adam(discriminator.parameters(), lr=LR, betas=(BETA1, 0.999))
-
+def load(checkpoint):
     cp = torch.load(checkpoint, map_location=device)
-
+    global cur_epoch
+    cur_epoch = cp['epoch']
     generator.load_state_dict(cp['g'])
     discriminator.load_state_dict(cp['d'])
-    generator.eval()
-    discriminator.eval()
     optimizerG.load_state_dict(cp['og'])
     optimizerD.load_state_dict(cp['od'])
 
+
+def test():
+    generator.eval()
+    discriminator.eval()
     for i in range(10):
-        plt.imshow(np.transpose(generator(fixed_noise)[0].detach().cpu().numpy()))
+        imgs = generator(fixed_noise)
+        plt.imshow(np.transpose(imgs[i].detach().cpu().numpy()), cmap='Greys_r')
+        plt.title(str(discriminator(imgs)[i]))
         plt.waitforbuttonpress()
             
 
 if __name__ == '__main__':
-    train()
+    load('cp/cp_75')
+    test()
